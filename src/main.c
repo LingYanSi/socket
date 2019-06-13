@@ -8,7 +8,7 @@
 #include <fcntl.h> // for open
 #include <unistd.h> // for close
 
-#define MAXLINE 4906
+#define MAXLINE 1024
 
 // 方法必须要先声明 https://stackoverflow.com/questions/32703675/implicit-declaration-of-function-enterchar-wimplicit-function
 int sendHTML(int connectID);
@@ -80,18 +80,18 @@ int main(int argc, char** argv) {
     while (1) {
         /**
          * 当应用程序接收到来自其它主机的面对数据流的连接时，通过事件通知它(比如unix的 select()系统调用)。
-         * 必须用accept()初始化连接。accept为每个连接建立新的套接字，并从监听队列中移除这个连接。
+         * 必须用accept()初始化连接。accept为每个连接建立新的socket，并从监听队列中移除这个连接。
             int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
                 sockefd 监听的套接字描述符
                 addr 客户端地址结构体信息，一个指向sockaddr的指针
                 addrlen客户端地址结构体的大小
          */
         connfd = accept(socketID, (struct sockaddr*)NULL, NULL);
+        printf("connfd: %d \n", connfd);
         if (connfd == -1) {
             printf("accept socket error: %s(errno: %d)", strerror(errno), errno);
             continue;
         }
-
         /**
          * https://www.cnblogs.com/jianqiang2010/archive/2010/08/20/1804598.html
          * int recv( SOCKET s, char FAR *buf, int len, int flags);
@@ -107,15 +107,38 @@ int main(int argc, char** argv) {
             所以 在这种情况下要调用几次recv函数才能把s的接收缓冲中的数据copy完。
             recv函数仅仅是copy数据，真正的接收数据是协议来完成的），
             recv函数返回其实际copy的字节数。如果recv在copy时出错，那么它返回SOCKET_ERROR；如果recv函数在等待协议接收数据时网络中断了，那么它返回0。
-        注意：在Unix系统下，如果recv函数在等待协议接收数据时网络断开了，那么调用recv的进程会接收到一个SIGPIPE信号，进程对该信号的默认处理是进程终止。
+            注意：在Unix系统下，如果recv函数在等待协议接收数据时网络断开了，那么调用recv的进程会接收到一个SIGPIPE信号，进程对该信号的默认处理是进程终止。
+        心得：
+            数据并不是一次性就可以接收完毕的，需要等到n = 0 的时候，才算数据接收完毕
+            那么在这个过程中，其他请求还可以请求进来吗？理论上是可以的，只不过程序处理不过来而已吧，需要队列化执行？
          */
-        n = recv(connfd, buff, MAXLINE, 0);
+
+        printf("recv msg from client:");
+        while (1) {
+            // 阻塞 会等到下一次请求进来
+            n = (int)recv(connfd, buff, MAXLINE, 0);
+            buff[n] = '\0';
+            printf("%s", buff);
+            bzero(buff, MAXLINE);
+
+            if (n <= 0) {
+                // 由于是非阻塞的模式
+                // n == EAGAIN 表示当前缓冲区已无数据可读
+                // n == 0 这里表示对端的socket已正常关闭.
+                break;
+            }
+
+            // 字符串没有填充满，表示请求信息已经接受完毕
+            if (n != sizeof(buff)) {
+                break;
+            }
+        }
+
+        printf("\nrecv done\n");
         // n表示buff的实际长度，通过赋值\0标识字符串的实际终结位置 https://blog.csdn.net/ljss321/article/details/51195125
         // buff长度有限制，这里面还牵扯到压缩/解码等操作，其实很复杂，不过就简单的服务器来说也就这样子了
         // buff表示服务端收到的数据
         // 可以打印一下post请求处理大文件的情况
-        buff[n] = '\0';
-        printf("recv msg from client:\n%s\n", buff);
         sendHTML(connfd);
         // 关闭单条连接
         close(connfd);
@@ -123,6 +146,7 @@ int main(int argc, char** argv) {
 
     // 关闭socket
     close(socketID);
+    return 0;
 }
 
 int sendHTML(int connectID) {
